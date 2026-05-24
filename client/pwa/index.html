@@ -6,6 +6,13 @@
     <meta name="theme-color" content="#b91c1c" />
     <title>Haven — Emergency Response</title>
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Prevent flash of wrong theme -->
+    <script>
+      (function(){
+        var t = localStorage.getItem('haven-theme') || 'dark';
+        document.documentElement.classList.add(t);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

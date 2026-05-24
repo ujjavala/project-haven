@@ -1,0 +1,26 @@
+# Hermes Agent configuration for Project Haven
+# Mounted into the hermes container at /config/hermes.yml
+
+jobs:
+  # ── Daily fire-risk morning briefing ──────────────────────────────────────
+  # Runs at 6am daily during Australian fire season (Oct–Mar).
+  # Fetches live fire danger ratings, synthesises a summary, and injects it
+  # into the Haven feed as a feed.created event via POST /feeds.
+  - name: fire-risk-briefing
+    schedule: "0 6 * * *"
+    prompt: |
+      Check the current fire danger ratings for NSW, VIC, SA, and WA using the
+      Bureau of Meteorology and NSW RFS public feeds. Only proceed if today's
+      date falls within Australian fire season (October through March).
+      Synthesise a 3-sentence morning briefing covering: overall severity level,
+      the highest-risk regions today, and one practical action recommendation for
+      residents. Keep the summary under 80 words and factually grounded.
+      Respond with JSON only — no markdown, no extra keys:
+      {"severity": "LOW|MEDIUM|HIGH|EXTREME|CATASTROPHIC", "summary": "..."}
+    deliver:
+      url: http://api-gateway:8080/feeds
+      method: POST
+      headers:
+        Content-Type: application/json
+    skills:
+      - web_search

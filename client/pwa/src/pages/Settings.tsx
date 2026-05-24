@@ -3,6 +3,7 @@ import {
   Bell, MapPin, WifiOff, Moon, PhoneCall, Trash2,
   ChevronRight, User, Shield, Info, Smartphone,
 } from 'lucide-react';
+import { useTheme } from '../hooks/useTheme';
 
 type Contact = { name: string; phone: string };
 
@@ -59,6 +60,7 @@ export default function Settings() {
   const [notifLow, setNotifLow]             = useState(false);
   const [offlineSync, setOfflineSync]       = useState(true);
   const [locationLive, setLocationLive]     = useState(true);
+  const { theme, toggleTheme }              = useTheme();
   const [contacts, setContacts]             = useState<Contact[]>([
     { name: '', phone: '' },
   ]);
@@ -151,8 +153,8 @@ export default function Settings() {
 
       {/* Accessibility */}
       <Section title="Accessibility & display">
-        <Row label="Dark mode" sub="App always uses dark theme for emergency readability" icon={Moon}>
-          <span className="badge badge-info" style={{ fontSize: '0.65rem' }}>Always on</span>
+        <Row label="Dark mode" sub="Switch between dark and light theme" icon={Moon}>
+          <Toggle on={theme === 'dark'} onToggle={toggleTheme} />
         </Row>
         <Row label="Reduced motion" sub="Controlled by system preference" icon={Smartphone}>
           <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>System</span>

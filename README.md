@@ -1,116 +1,267 @@
-# Welcome to Haven
+# Project Haven
 
-This app help individuals find a safe space during times of emergencies
+> AI-powered emergency response and disaster recovery platform for bushfire preparedness.
 
-In emergencies like bushfires, it's crucial to find safe spaces and stay informed about government services and entitlements. However, there is currently no system in place to notify individuals about the likelihood of disasters, evacuation points, or recovery options, such as grants, relief, and aftercare support. This can make navigating these resources especially difficult for people with special needs.
+Originally built at **GovHack 2024** (and won). Rebuilt from the ground up as a production-grade platform.
 
-Our app solves these challenges by offering a one of a kind community-driven solution powered by Gen-AI and predictive analytics. Supported by Digital Atlas APIs, it not only helps people during crises but also guides them through the recovery process with clear next steps.
+---
 
-### System Design:
+## What it does
 
-![hld](arch.jpg)
+During a bushfire, information is survival. Project Haven answers the three questions that matter most:
 
-### Salient features:
+- **Where do I go?** — nearest open evacuation centres with capacity and accessibility info
+- **How bad is it?** — real-time risk prediction from live weather streams + historical fire data
+- **What do I do after?** — verified government grants and recovery services matched to your situation
 
-#### Leveraging Gen AI and Predictive analysis
+It works offline. When mobile networks go down mid-crisis — and they will — the app keeps working from a local cache.
 
-We leverage Gen-AI and predictive analytics to protect communities from future bushfires by providing real-time alerts on potential threats in their area. Our intelligent analysis engine processes historical bushfire data, geo-location information, and live weather updates through event streaming to predict the likelihood, severity, and proximity of upcoming bushfires.
+---
 
-In addition, our app offers personalized recommendations for safe spaces and evacuation routes, as well as guidance on next steps. Powered by Gen-AI, it analyzes data on evacuation points and local services to suggest the nearest exit and the most appropriate support services to access.
+## TL;DR — Run Locally
 
-#### Unlocking the potential of Digital Atlas of Australia
+```bash
+git clone https://github.com/ujjavala/project-haven.git
+cd project-haven
+cp .env.example .env
+docker compose up --build
+```
 
-We use Digital Atlas APIs to generate maps that users can access to locate evacuation points. Additionally, we utilize the datasets provided by Digital Accuracy for predictive analysis and insights.
+Open **http://localhost:3000** — done.
 
-#### Progressive Web App (PWA) for low connectivity zones
+---
 
-Our app operates in both online and offline modes, ensuring access to key services even with limited connectivity. Recommendations for evacuation points and essential services continue to work offline, utilizing service workers and a cached database that updates instantly once connectivity is restored. This approach addresses the issue of low connectivity during disasters. We employ a network-first strategy to provide users with the most current information whenever possible.
+## Quick Start
 
-#### Event-driven
+```bash
+cp .env.example .env
+docker compose up --build
+```
 
-Our architecture is built on microservice and event-driven principles:
+One command starts 6 microservices, an API gateway, PostgreSQL instances, RabbitMQ, and the React PWA at `http://localhost:3000`.
 
-1. We utilize event streaming for the chat feed, ensuring eventual consistency and minimal latency for users. Weather data is also streamed in real-time to support accurate bushfire predictions.
-2. Our bushfire prediction system follows a pub-sub model, where the engine listens for events and publishes them to relevant message topics.
-3. We implement the CQRS pattern for our location database, with the user-service handling all database writes and a cached version maintained for read operations. This allows the app to function seamlessly in offline mode.
+**Trigger the full prediction → alert pipeline:**
 
-### Databases
+```bash
+curl -X POST http://localhost:8080/weather \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "lat": -33.87,
+    "lng": 151.21,
+    "temperature": 42,
+    "windSpeed": 80,
+    "humidity": 10,
+    "season": "summer",
+    "vegetationDensity": 0.9
+  }'
+```
 
-#### User
-Stores user attributes such as name, email, etc. Any PII data is either hashed or not stored in the database
+This simulates an extreme weather event near Sydney. The prediction engine scores it, publishes a `bushfire.predicted` event, and the alert service fires a CRITICAL notification — all within seconds.
 
-#### Location
-The user's GPS location is stored in a location database during sign-up, with the CQRS pattern ensuring that the write database is only accessed when the user signs up or manually updates their location. For all other read-related activities, a separate read database is utilized.
+---
 
-This approach also enhances the app's PWA functionality, allowing it to efficiently handle offline mode by using cached data for location-based services without needing constant access to the write database.
+## Architecture
 
-#### Forum 
+```mermaid
+flowchart TB
+    subgraph client["Client — React PWA (port 3000)"]
+        direction TB
+        UI["Emergency Dashboard\nAlerts · Safe Spaces · Feed\nRecovery · AI Assistant"]
+        SW["Service Worker\n(Workbox — offline cache)"]
+        IDB["IndexedDB\n(offline sync queue)"]
+        UI <--> SW
+        SW <--> IDB
+    end
 
-This database will store user posts and feeds, utilizing event streaming internally to ensure low latency and eventual consistency.
+    subgraph gateway["API Gateway (port 8080)"]
+        GW["Express Proxy\n+ Rate Limit\n+ Correlation ID"]
+    end
 
-_Note: Additionally cached evacuation and service databases are used to offer PWA_
+    subgraph broker["Message Broker"]
+        MQ["RabbitMQ"]
+    end
 
-### Datasets
+    subgraph services["Microservices"]
+        direction TB
+        US["User Service\n:3001\nPostgres"]
+        FS["Feed Service\n:3002\nPostgres"]
+        PS["Prediction Service\n:3003\nPostgres"]
+        SS["Safe Space Service\n:3004\nPostgres"]
+        RS["Recommendation Service\n:3005\nPostgres"]
+        AS["Alert Service\n:3006\nPostgres"]
+    end
 
-#### Historic Bushfire Dataset 
-This data set is collected from https://digital.atlas.gov.au/datasets/digitalatlas::historical-bushfire-boundaries-3/about. It is used to predict the bushfires.
+    subgraph data["External Data"]
+        GA["Geoscience Australia\nArcGIS REST API\n(evacuation points,\nfire-prone areas)"]
+        BOM["BOM / RFS\nWeather & Fire Feeds"]
+    end
 
-#### Evacuation points
-This data will ideally be gathered from the Digital Atlas to identify the nearest evacuation or relief centers based on the user's location.
+    client -->|"REST /api/*\n(online)"| gateway
+    SW -->|"Background sync\n(reconnect)"| gateway
+    gateway --> GW
+    GW --> US & FS & PS & SS & RS & AS
 
-#### Weather
-This data will ideally be sourced from the Digital Atlas, providing users with attributes such as wind speed, direction, temperature, and humidity specific to their location.
+    PS -->|"weather.updated →"| MQ
+    MQ -->|"→ bushfire.predicted"| PS
+    PS -->|"bushfire.predicted →"| MQ
+    MQ -->|"→ alert.generated"| AS
+    AS -->|"→ push / in-app"| MQ
+    FS -->|"feed.created →"| MQ
+    US -->|"user.created / location.updated →"| MQ
 
-#### Citizens
-This dataset is collected from https://digital.atlas.gov.au/datasets/10992a67b43149fc9addc2b0a3ba5d4d_0/explore. This is used to offer personalised services (such as recommending government entitlements) for our users.
+    SS -->|"Atlas enrichment\n(startup)"| GA
+    PS -->|"Atlas enrichment\n(startup)"| GA
+    PS -->|"weather stream"| BOM
+```
 
+> The Mermaid source is also available as [`architecture.mmd`](architecture.mmd).
 
-### Core Services:
+---
 
-#### User Service:
+## Repository Structure
 
-Used to create new users, get users, update and delete user. 
+```
+project-haven/
+├── client/pwa/              # React + TypeScript + Vite PWA
+│   └── src/
+│       ├── pages/           # Dashboard, Alerts, SafeSpaces, Feed, Recovery,
+│       │                    # AIAssistant, Settings, Onboarding
+│       ├── components/      # Nav, AlertList, SafeSpaceList, HavenMap
+│       ├── hooks/           # useGeolocation, useOnlineStatus
+│       └── workers/         # Workbox service worker config
+├── server/
+│   ├── api-gateway/         # Express reverse proxy, rate limiting
+│   ├── user-service/        # CRUD users, JWT auth, audit logging
+│   ├── feed-service/        # Community feed, event stream
+│   ├── prediction-service/  # Bushfire risk engine (XGBoost weights → TS)
+│   ├── safe-space-service/  # Evacuation point recommendations
+│   ├── recommendation-service/ # Government grants & recovery services
+│   ├── alert-service/       # Tiered push notifications, <5s delivery
+│   └── shared/              # @haven/shared — events, DTOs, logger
+├── notebooks/               # EDA + XGBoost model (Python)
+├── docker-compose.yml
+├── architecture.mmd         # Mermaid architecture diagram
+├── blog.md                  # GitHub Finish-Up-A-Thon submission
+└── blog-hermes.md           # Hermes Agent Challenge submission
+```
 
-#### Feed Service
+---
 
-Used to create new feeds, get feeds, update and delete feeds. 
+## Services
 
-#### Safe Space Suggester
+| Service | Port | Responsibilities |
+|---|---|---|
+| **api-gateway** | 8080 | Proxy, rate limiting, correlation IDs |
+| **user-service** | 3001 | User CRUD, JWT auth, location, audit log |
+| **feed-service** | 3002 | Community feed, high-write event stream |
+| **prediction-service** | 3003 | Fire risk from weather streams + historical data |
+| **safe-space-service** | 3004 | Evacuation points, distance ranking, Atlas enrichment |
+| **recommendation-service** | 3005 | Scenario-based grants and recovery services |
+| **alert-service** | 3006 | Tiered notifications, retry, offline sync |
 
-Predicts the likelihood of a bushfire and recommends evacuation points based on the user's location. This service operates in both online and offline modes.
+---
 
-#### Service Suggester
+## Event Pipeline
 
-Recommends services tailored to the user's current situation. For example, it suggests grants or housing support for disaster victims in recovery, or emergency services if the user is caught in an active fire.
+All inter-service communication is asynchronous via RabbitMQ:
 
-#### Alert Service
+```
+weather.updated  →  prediction-service  →  bushfire.predicted
+                                       →  alert-service       →  alert.generated
+user-service     →  user.created / location.updated
+feed-service     →  feed.created
+```
 
-Sends in-app notifications to users when a bushfire is predicted. Our intelligent predictive analysis, driven by historical data, ensures accurate forecasting. After completing the analysis, we verify the results with external agencies, and if confirmed, an alert is issued to the user. Additionally, the app provides real-time weather updates based on the user's location during the emergency, ensuring they receive the most current information.
+Event envelope shape (from `@haven/shared`):
 
-### Jupyter pipeline flowchart:
-![alt text](flowchart.jpg)
+```typescript
+{
+  eventId:       UUID
+  correlationId: UUID
+  timestamp:     string  // ISO 8601
+  source:        string
+  version:       string
+  payload:       object
+}
+```
 
-### Tools Used:
+---
 
-1. Jupyter notebooks using Python to analyse the data and gain insights
-2. Swagger Codegen for auto-generation of client ans servers from openapi specification
-3. Python and python based libraries
+## Atlas Data Integration
 
- 
-### Important Links
+At startup, three services enrich their databases with live data from the [Geoscience Australia ArcGIS REST API](https://services.ga.gov.au/gis/rest/services/):
 
-Dataset used:
-https://digital.atlas.gov.au/datasets/digitalatlas::historical-bushfire-boundaries-3/about
-https://digital.atlas.gov.au/datasets/digitalatlas::3-hourly-bushfire-accumulation/about?layer=3
-https://digital.atlas.gov.au/datasets/10992a67b43149fc9addc2b0a3ba5d4d_0/explore
-https://abs.gov.au/census/find-census-data/quickstats/2021/128021538
+- **safe-space-service** — queries Topographic Facilities (`HSPT`, `COMM`, `STAD`, `SCHL`) for real Australian evacuation-capable venues
+- **prediction-service** — queries fire-prone area polygons; falls back to 12 curated historically high-risk locations
+- **recommendation-service** — adds 8 additional verified Australian recovery programs (Services Australia, Red Cross, state grants)
 
+All enrichment is fire-and-forget — never blocks startup, never throws.
 
+---
 
+## Frontend
 
-Drawio links:
+Mobile-first offline-capable PWA with an emergency-first design system:
 
-https://drive.google.com/file/d/1EwtUMJB6naeb_ZSYn3BIT_HJjjWl-Uu9/view?usp=sharing
-https://drive.google.com/file/d/1Qe1mxYLMKNGw6gAVxjVUiDwP1jcqsbuK/view?usp=sharing
+| Screen | Key Features |
+|---|---|
+| **Dashboard** | Risk severity banner (animated CRITICAL pulse), stat tiles, map, sticky CTAs |
+| **Alerts** | Full-screen overlay for CRITICAL, tiered behaviour by priority |
+| **Safe Spaces** | Ranked by distance, capacity bars, accessibility badges, filter buttons |
+| **Feed** | Community updates, compose, verification badges |
+| **Recovery** | Scenario grid, government grant cards with eligibility, Apply Now links |
+| **AI Assistant** | Chat interface with emergency guidance, quick prompts, safety disclaimer |
+| **Onboarding** | 4-step permissions flow (location → notifications → offline) |
+| **Settings** | Toggles, emergency contacts, accessibility options |
+
+**Offline behaviour:** network-first → cache fallback → background sync queue → conflict reconciliation on reconnect.
+
+---
+
+## Prediction Engine
+
+The `prediction-service` uses a TypeScript heuristic engine with weights transcribed from the XGBoost model trained in [`notebooks/historic_bushfire.ipynb`](notebooks/historic_bushfire.ipynb):
+
+- Inputs: temperature, humidity, wind speed, wind direction, vegetation density, season
+- Output: severity score (0–1), confidence, predicted radius (km), spread direction
+- Thresholds: `< 0.3` LOW · `< 0.5` MEDIUM · `< 0.7` HIGH · `≥ 0.7` EXTREME
+
+---
+
+## Datasets
+
+| Dataset | Source | Used for |
+|---|---|---|
+| Historical Bushfire Boundaries | [Digital Atlas](https://digital.atlas.gov.au/datasets/digitalatlas::historical-bushfire-boundaries-3/about) | XGBoost model training |
+| Topographic Facilities | [GA ArcGIS REST](https://services.ga.gov.au/gis/rest/services/Topographic/Facilities/FeatureServer/0) | Evacuation point enrichment |
+| ABS Family & Community | [ABS 2021 Census](https://abs.gov.au/census/find-census-data/quickstats/2021/128021538) | Community vulnerability analysis |
+| 3-hourly Bushfire Accumulation | [Digital Atlas](https://digital.atlas.gov.au/datasets/digitalatlas::3-hourly-bushfire-accumulation/about) | Fire spread modelling |
+
+---
+
+## Non-Functional Targets
+
+| Requirement | Target |
+|---|---|
+| API latency | < 300 ms |
+| Alert delivery | < 5 s |
+| Offline startup | < 2 s |
+| Prediction processing | Near real-time |
+
+---
+
+## Tech Stack
+
+- **Frontend:** React 18, TypeScript, Vite, Workbox PWA, Leaflet, lucide-react
+- **Backend:** Node.js 20, Express, TypeScript (strict)
+- **Messaging:** RabbitMQ
+- **Databases:** PostgreSQL (per-service)
+- **ML:** XGBoost (Python notebooks) → TypeScript heuristic engine
+- **Infra:** Docker Compose, multi-stage builds, `@haven/shared` local npm package
+- **Data:** Geoscience Australia / Digital Atlas ArcGIS REST APIs
+
+---
+
+*Originally built at GovHack 2024. Rebuilt properly in 2026.*
 
 

@@ -21,9 +21,50 @@ const WELCOME: Message = {
   text: "Hi, I'm the Haven AI. I can guide you through emergency preparedness, evacuation steps, and recovery resources.\n\nPlease remember: in a life-threatening situation, always call **000** immediately. My guidance is based on verified emergency protocols but is not a substitute for official emergency services.",
 };
 
-// Simulated local responses — replace with real API call when ready
-async function getAIResponse(userMessage: string): Promise<string> {
-  await new Promise(r => setTimeout(r, 900 + Math.random() * 600));
+const SYSTEM_PROMPT =
+  `You are Haven AI, an emergency guidance assistant for Australian bushfire preparedness, evacuation, and disaster recovery. ` +
+  `Your advice is grounded in verified protocols from NSW RFS, CFA, AFAC, and Services Australia. ` +
+  `Always recommend calling 000 for life-threatening emergencies. ` +
+  `Keep responses practical, concise, and actionable — users may be under active stress. ` +
+  `Never speculate about specific fire locations or behaviour beyond what the user tells you. ` +
+  `For recovery resources, refer only to verified Australian government programs.`;
+
+/** Stable per-browser session key — enables Hermes persistent memory across visits. */
+function getSessionKey(): string {
+  const STORAGE_KEY = 'haven-ai-session';
+  let key = localStorage.getItem(STORAGE_KEY);
+  if (!key) {
+    key = crypto.randomUUID();
+    localStorage.setItem(STORAGE_KEY, key);
+  }
+  return key;
+}
+
+async function getAIResponseHermes(userMessage: string): Promise<string> {
+  const res = await fetch('/assistant/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Hermes-Session-Key': getSessionKey(),
+    },
+    body: JSON.stringify({
+      model: 'hermes-agent',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user',   content: userMessage },
+      ],
+      max_tokens: 512,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Hermes responded with ${res.status}`);
+
+  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+  return data.choices?.[0]?.message?.content ?? 'Sorry, no response received.';
+}
+
+/** Local keyword fallback — used when Hermes is unavailable. */
+function getAIResponseLocal(userMessage: string): string {
   const msg = userMessage.toLowerCase();
 
   if (msg.includes('evacuate') || msg.includes('evacuation') || msg.includes('leave')) {
@@ -41,8 +82,15 @@ async function getAIResponse(userMessage: string): Promise<string> {
   if (msg.includes('kit') || msg.includes('pack') || msg.includes('bag')) {
     return "**Emergency kit essentials:**\n- Water (3L per person per day, 72-hour minimum)\n- Non-perishable food + can opener\n- Prescription medications (2 weeks' supply)\n- First aid kit\n- Copies of ID, insurance documents, bank cards\n- Phone charger + portable battery\n- Cash (small notes)\n- Spare clothes and sturdy shoes\n- Battery/hand-crank radio\n- Torch and spare batteries";
   }
-
   return "I can help with evacuation planning, what to do during a bushfire, family safety, emergency kits, and recovery resources.\n\nFor any life-threatening emergency, call **000**.\n\nWhat specific situation are you preparing for?";
+}
+
+async function getAIResponse(userMessage: string): Promise<string> {
+  try {
+    return await getAIResponseHermes(userMessage);
+  } catch {
+    return getAIResponseLocal(userMessage);
+  }
 }
 
 export default function AIAssistant() {
@@ -100,7 +148,7 @@ export default function AIAssistant() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100dvh - var(--nav-h) - 1px)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
       <div style={{ padding: 'var(--sp-4)', borderBottom: '1px solid var(--c-border-2)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
         <div style={{ width: 40, height: 40, borderRadius: 'var(--r-full)', background: 'linear-gradient(135deg, var(--c-info-dim), var(--c-surface-3))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -163,7 +211,7 @@ export default function AIAssistant() {
       </div>
 
       {/* Input bar */}
-      <div className="chat-input-bar" style={{ marginBottom: 'var(--nav-h)' }}>
+      <div className="chat-input-bar">
         <textarea
           ref={textareaRef}
           className=""

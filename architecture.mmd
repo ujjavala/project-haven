@@ -1,0 +1,49 @@
+flowchart TB
+    subgraph client["Client — React PWA (port 3000)"]
+        direction TB
+        UI["Emergency Dashboard\nAlerts · Safe Spaces · Feed\nRecovery · AI Assistant"]
+        SW["Service Worker\n(Workbox — offline cache)"]
+        IDB["IndexedDB\n(offline sync queue)"]
+        UI <--> SW
+        SW <--> IDB
+    end
+
+    subgraph gateway["API Gateway (port 8080)"]
+        GW["Express Proxy\n+ Rate Limit\n+ Correlation ID"]
+    end
+
+    subgraph broker["Message Broker"]
+        MQ["RabbitMQ"]
+    end
+
+    subgraph services["Microservices"]
+        direction TB
+        US["User Service\n:3001\nPostgres"]
+        FS["Feed Service\n:3002\nPostgres"]
+        PS["Prediction Service\n:3003\nPostgres"]
+        SS["Safe Space Service\n:3004\nPostgres"]
+        RS["Recommendation Service\n:3005\nPostgres"]
+        AS["Alert Service\n:3006\nPostgres"]
+    end
+
+    subgraph data["External Data"]
+        GA["Geoscience Australia\nArcGIS REST API\n(evacuation points,\nfire-prone areas)"]
+        BOM["BOM / RFS\nWeather & Fire Feeds"]
+    end
+
+    client -->|"REST /api/*\n(online)"| gateway
+    SW -->|"Background sync\n(reconnect)"| gateway
+    gateway --> GW
+    GW --> US & FS & PS & SS & RS & AS
+
+    PS -->|"weather.updated →"| MQ
+    MQ -->|"→ bushfire.predicted"| PS
+    PS -->|"bushfire.predicted →"| MQ
+    MQ -->|"→ alert.generated"| AS
+    AS -->|"→ push / in-app"| MQ
+    FS -->|"feed.created →"| MQ
+    US -->|"user.created / location.updated →"| MQ
+
+    SS -->|"Atlas enrichment\n(startup)"| GA
+    PS -->|"Atlas enrichment\n(startup)"| GA
+    PS -->|"weather stream"| BOM
