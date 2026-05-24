@@ -212,29 +212,41 @@ For the recovery scenario, I added a route in the api-gateway that delegates a r
 
 ```typescript
 // api-gateway: POST /recommendations/research
-app.post('/recommendations/research', async (req, res) => {
+// HERMES_BASE = http://ollama:11434 (set via env in docker-compose)
+// HERMES_MODEL = nous-hermes2 (default, overridable via HERMES_MODEL env var)
+app.post('/recommendations/research', express.json(), async (req, res) => {
   const { postcode, situation } = req.body;
 
-  const hermesRes = await fetch('http://hermes:8642/v1/chat/completions', {
+  const hermesRes = await fetch(`${HERMES_BASE}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.HERMES_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'hermes-agent',
-      messages: [{
-        role: 'user',
-        content: `Research current Australian government disaster recovery grants 
-          available for postcode ${postcode}. Situation: ${situation}.
-          Return JSON array of { title, provider, description, applicationUrl, eligibilitySummary }.
-          Only include currently open programs with verified URLs.`,
-      }],
+      model: HERMES_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an Australian emergency recovery specialist. Return ONLY a valid JSON array — no markdown fences, no commentary, just the array.',
+        },
+        {
+          role: 'user',
+          content: `Research current Australian government disaster recovery grants
+            available for postcode ${postcode}. Situation: ${situation}.
+            Return JSON array of { title, provider, description, applicationUrl, eligibilitySummary }.
+            Only include currently open programs with verified URLs.`,
+        },
+      ],
+      max_tokens: 1024,
     }),
   });
 
   const data = await hermesRes.json();
-  // Parse and upsert into recommendations DB via recommendation-service...
+  const content = data.choices[0].message.content;
+  // Strip accidental markdown fences if the model wraps the JSON
+  const cleaned = content.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+  const grants = JSON.parse(cleaned);
+  res.json({ grants });
 });
 ```
 
