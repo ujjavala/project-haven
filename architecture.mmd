@@ -10,6 +10,11 @@ flowchart TB
 
     subgraph gateway["API Gateway (port 8080)"]
         GW["Express Proxy\n+ Rate Limit\n+ Correlation ID"]
+        CRON["node-cron\n(6am fire-season briefing)"]
+    end
+
+    subgraph ai["Local AI · Docker"]
+        OL["Ollama :11434\nnous-hermes2\n(ollama-data volume)"]
     end
 
     subgraph broker["Message Broker"]
@@ -34,7 +39,10 @@ flowchart TB
     client -->|"REST /api/*\n(online)"| gateway
     SW -->|"Background sync\n(reconnect)"| gateway
     gateway --> GW
+    GW -->|"/assistant/*\n/recommendations/research"| OL
     GW --> US & FS & PS & SS & RS & AS
+    CRON -->|"synthesise briefing"| OL
+    CRON -->|"fire briefing → feed.created"| FS
 
     PS -->|"weather.updated →"| MQ
     MQ -->|"→ bushfire.predicted"| PS

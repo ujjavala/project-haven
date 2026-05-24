@@ -45,10 +45,9 @@ async function getAIResponseHermes(userMessage: string): Promise<string> {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Hermes-Session-Key': getSessionKey(),
     },
     body: JSON.stringify({
-      model: 'hermes-agent',
+      model: 'nous-hermes2',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: userMessage },

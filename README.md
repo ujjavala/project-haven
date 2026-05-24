@@ -75,6 +75,11 @@ flowchart TB
 
     subgraph gateway["API Gateway (port 8080)"]
         GW["Express Proxy\n+ Rate Limit\n+ Correlation ID"]
+        CRON["node-cron\n(6am fire-season briefing)"]
+    end
+
+    subgraph ai["Local AI · Docker"]
+        OL["Ollama :11434\nnous-hermes2\n(ollama-data volume)"]
     end
 
     subgraph broker["Message Broker"]
@@ -99,7 +104,10 @@ flowchart TB
     client -->|"REST /api/*\n(online)"| gateway
     SW -->|"Background sync\n(reconnect)"| gateway
     gateway --> GW
+    GW -->|"/assistant/*\n/recommendations/research"| OL
     GW --> US & FS & PS & SS & RS & AS
+    CRON -->|"synthesise briefing"| OL
+    CRON -->|"fire briefing → feed.created"| FS
 
     PS -->|"weather.updated →"| MQ
     MQ -->|"→ bushfire.predicted"| PS
@@ -209,8 +217,8 @@ Mobile-first offline-capable PWA with an emergency-first design system:
 | **Alerts** | Full-screen overlay for CRITICAL, tiered behaviour by priority |
 | **Safe Spaces** | Ranked by distance, capacity bars, accessibility badges, filter buttons |
 | **Feed** | Community updates, compose, verification badges |
-| **Recovery** | Scenario grid, government grant cards with eligibility, Apply Now links |
-| **AI Assistant** | Chat interface with emergency guidance, quick prompts, safety disclaimer |
+| **Recovery** | Scenario grid, live AI grant search (Hermes via `/recommendations/research`), static seed cards, eligibility, Apply Now links |
+| **AI Assistant** | Chat powered by Nous Hermes 2 (Ollama), emergency guidance, quick prompts, 000 escalation |
 | **Onboarding** | 4-step permissions flow (location → notifications → offline) |
 | **Settings** | Toggles, emergency contacts, accessibility options |
 
@@ -254,6 +262,7 @@ The `prediction-service` uses a TypeScript heuristic engine with weights transcr
 
 - **Frontend:** React 18, TypeScript, Vite, Workbox PWA, Leaflet, lucide-react
 - **Backend:** Node.js 20, Express, TypeScript (strict)
+- **AI:** Nous Hermes 2 via Ollama (OpenAI-compatible, locally hosted — chat, grant research, fire briefings)
 - **Messaging:** RabbitMQ
 - **Databases:** PostgreSQL (per-service)
 - **ML:** XGBoost (Python notebooks) → TypeScript heuristic engine

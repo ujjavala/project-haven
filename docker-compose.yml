@@ -12,7 +12,8 @@ volumes:
   pg-recommendations:
   pg-alerts:
   rabbitmq-data:
-  hermes-data:
+  ollama-data:
+
 
 # ─── Common service defaults ─────────────────────────────────────────────────
 x-service-defaults: &service-defaults
@@ -299,8 +300,9 @@ services:
       SAFE_SPACE_SERVICE_URL:     http://safe-space-service:3004
       RECOMMENDATION_SERVICE_URL: http://recommendation-service:3005
       ALERT_SERVICE_URL:          http://alert-service:3006
-      HERMES_API_KEY:             ${HERMES_API_KEY:-}
-      HERMES_URL:                 http://hermes:8642
+      HERMES_URL:                 http://ollama:11434
+      HERMES_MODEL:               ${HERMES_MODEL:-nous-hermes2}
+      FEED_SERVICE_URL_INTERNAL:  http://feed-service:3002
     depends_on:
       user-service:
         condition: service_healthy
@@ -314,6 +316,8 @@ services:
         condition: service_healthy
       alert-service:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -331,31 +335,41 @@ services:
       api-gateway:
         condition: service_healthy
 
-  # ── Hermes Agent (optional — run with: docker compose --profile hermes up) ──────────
-  # Hermes is built from source (no public Docker image).
-  # Clone first: git clone https://github.com/NousResearch/hermes-agent vendor/hermes-agent
-  # Then: docker compose --profile hermes up --build
-  # The AI Assistant falls back to local keyword responses when Hermes is not running.
-  hermes:
-    build:
-      context: vendor/hermes-agent
-      dockerfile: Dockerfile
-    profiles: [hermes]
+  # ── Ollama ─────────────────────────────────────────────────────────────────
+  # Serves Nous Hermes 2 via the OpenAI-compatible API on port 11434.
+  # GPU acceleration: uncomment the deploy block below (requires nvidia-container-toolkit).
+  ollama:
+    image: ollama/ollama
     <<: *service-defaults
     ports:
-      - "8642:8642"
-    environment:
-      API_SERVER_ENABLED: "true"
-      API_SERVER_HOST: "0.0.0.0"
-      API_SERVER_PORT: "8642"
-      API_SERVER_KEY: ${HERMES_API_KEY:-}
-      OPENROUTER_API_KEY: ${HERMES_API_KEY:-}
+      - "11434:11434"
     volumes:
-      - hermes-data:/opt/data
-      - ./server/hermes:/opt/data/cron:ro
+      - ollama-data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8642/health 2>/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Pulls the model into the shared volume before api-gateway starts.
+  # Subsequent starts are fast — the model is already cached in ollama-data.
+  # Change HERMES_MODEL in .env to use a different model (also update below).
+  ollama-init:
+    image: ollama/ollama
+    networks: [haven-net]
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      HERMES_MODEL: ${HERMES_MODEL:-nous-hermes2}
+    entrypoint: ["/bin/sh", "-c", "ollama pull $$HERMES_MODEL"]
+    depends_on:
+      ollama:
+        condition: service_healthy

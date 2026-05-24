@@ -14,12 +14,13 @@ Under the hood, the platform combines:
 
 - **Predictive analytics** — a bushfire risk engine built on historical boundary data and real-time weather streams
 - **Smart evacuation routing** — nearest safe space recommendations with distance and ETA
-- **AI-powered recovery support** — scenario-based government grants and services (real ones, like the Disaster Recovery Payment and Primary Producer Recovery Grant)
+- **AI-powered recovery support** — scenario-based government grants and services backed by live AI research via Nous Hermes 2 (real ones, like the Disaster Recovery Payment and Primary Producer Recovery Grant)
+- **Live emergency guidance** — an AI Assistant powered by Nous Hermes 2 running locally via Ollama; real conversational responses grounded in Australian emergency protocols, with a system prompt that escalates to 000 when needed
 - **Live community feed** — on-the-ground updates from people in affected areas
 - **Real-time alerts** — tiered notifications from low-priority feed updates to full-screen critical banners
 - **Offline-first PWA** — because during emergencies, mobile networks are the first thing to go
 
-The architecture is fully event-driven microservices: a prediction service subscribes to weather updates, runs a heuristic engine (trained on XGBoost weights from our data notebooks), publishes bushfire predictions, and the alert service automatically generates tiered notifications from those predictions. All async. All decoupled. RabbitMQ handling the message bus, PostgreSQL for persistence, React PWA for the frontend, everything containerised and wired together with Docker Compose.
+The architecture is fully event-driven microservices: a prediction service subscribes to weather updates, runs a heuristic engine (trained on XGBoost weights from our data notebooks), publishes bushfire predictions, and the alert service automatically generates tiered notifications from those predictions. All async. All decoupled. RabbitMQ handling the message bus, PostgreSQL for persistence, React PWA for the frontend, everything containerised and wired together with Docker Compose — including a local Ollama instance serving Nous Hermes 2 for the AI Assistant, grant research, and scheduled fire-season briefings.
 
 The part I'm still most proud of? The offline-first thinking. The app caches evacuation points, alerts, and recommendations locally. If connectivity drops mid-crisis — which it will — the app keeps working.
 
@@ -56,7 +57,7 @@ That simulates an extreme weather event near Sydney, runs it through the predict
 
 Okay, here's the honest version.
 
-Project Haven was built for **GovHack 2024**.
+Project Haven was built for [**GovHack 2024**](https://govhack.org/)
 
 If you've never done GovHack — it's a 46-hour hackathon using Australian government open data. You show up, pick a problem, build something, demo it, and hope the judges like it.
 
@@ -154,7 +155,7 @@ Copilot rebuilt the entire frontend systematically:
 - **Web app layout** — removed the `430px` phone-shell constraint and switched the root layout to `display: flex; flex-direction: row` so the sidebar and content fill the viewport side by side; no `max-width` on the main content area
 - **Emergency dashboard** — risk severity banner with animated pulse on CRITICAL, two-column grid layout (map + stat tiles on the left, live alerts + nearest safe spaces on the right at `380px`), sticky CTA buttons
 - **Alert overlay** — full-screen takeover for CRITICAL priority alerts with haptic-style dismiss, priority-tiered behaviour (CRITICAL → full screen, HIGH → persistent, MEDIUM → toast, LOW → feed)
-- **Three new screens** — Onboarding (4-step permissions flow), Settings (toggles, emergency contacts, accessibility), AI Assistant (chat interface)
+- **Three new screens** — Onboarding (4-step permissions flow), Settings (toggles, emergency contacts, accessibility), AI Assistant (chat interface — now backed by Nous Hermes 2 via Ollama)
 
 All components used the design token system consistently — no hardcoded hex values, no magic numbers.
 
@@ -208,7 +209,7 @@ Project Haven started as a 46-hour sprint, won a competition, and then sat untou
 
 The answer turned out to be: a lot better.
 
-The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI is a full-width web application — not a phone simulator in a browser — with proper sidebar navigation, back-button routing, and a two-column dashboard that uses screen real estate the way a desktop tool should. Live fire detections from NASA satellites, real Australian evacuation assembly points from OpenStreetMap, and current government grants from GrantConnect flow in at startup. The whole thing runs with a single `docker compose up --build`.
+The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI is a full-width web application — not a phone simulator in a browser — with proper sidebar navigation, back-button routing, and a two-column dashboard that uses screen real estate the way a desktop tool should. Live fire detections from NASA satellites, real Australian evacuation assembly points from OpenStreetMap, and current government grants from GrantConnect flow in at startup. The AI Assistant — previously a `setTimeout` and a `switch` statement of canned responses — is now backed by Nous Hermes 2 running locally via Ollama, with a system prompt grounded in verified Australian emergency protocols. The whole thing runs with a single `docker compose up --build`.
 
 None of that would have happened at this pace working solo without Copilot. Not because any individual piece was impossible — but because the sheer volume of consistent, conforming implementation across six services, a shared module, a full UI rebuild, a data enrichment layer across four distinct external APIs, and edge cases like the `ON CONFLICT` silent failure would have taken weeks of context-switching. With Copilot holding the system context and working within the established patterns, it compressed into days.
 
@@ -222,5 +223,5 @@ And that's probably the best thing this challenge could have done.
 
 ---
 
-*Built with TypeScript, React, Node.js, PostgreSQL, RabbitMQ, Docker, and GitHub Copilot.*  
+*Built with TypeScript, React, Node.js, PostgreSQL, RabbitMQ, Docker, Ollama (Nous Hermes 2), and GitHub Copilot.*  
 *Originally born at GovHack 2024. Finally given room to grow.*

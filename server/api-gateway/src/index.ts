@@ -4,6 +4,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import cron from 'node-cron';
 import { createLogger } from '@haven/shared';
 
 const logger = createLogger('api-gateway');
@@ -20,8 +21,10 @@ const SERVICES = {
   weather:         process.env.PREDICTION_SERVICE_URL     ?? 'http://prediction-service:3003',
 };
 
-// Hermes Agent self-hosted sidecar (OpenAI-compatible API server on port 8642)
-const HERMES_BASE = process.env.HERMES_URL ?? 'http://hermes:8642';
+// Ollama OpenAI-compatible endpoint — nous-hermes2, no separate agent container needed
+const HERMES_BASE       = process.env.HERMES_URL    ?? 'http://host.docker.internal:11434';
+const HERMES_MODEL      = process.env.HERMES_MODEL  ?? 'nous-hermes2';
+const FEED_URL_INTERNAL = process.env.FEED_SERVICE_URL_INTERNAL ?? process.env.FEED_SERVICE_URL ?? 'http://feed-service:3002';
 
 app.use(helmet());
 app.use(cors());
@@ -45,22 +48,18 @@ app.use((req, _res, next) => {
 // Health check (responds instantly without hitting upstream)
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway' }));
 
-// ── Hermes AI proxy (/assistant/* → Hermes Agent sidecar) ────────────────
-// The API_SERVER_KEY is injected server-side; clients never see it.
+// ── Ollama AI proxy (/assistant/* → Ollama OpenAI-compatible endpoint) ──────
+// Rewrites /assistant/v1/chat/completions → Ollama /v1/chat/completions
+// Local Ollama does not require authentication.
 app.use(
   createProxyMiddleware({
     target: HERMES_BASE,
     changeOrigin: true,
     pathFilter: '/assistant',
-    pathRewrite: { '^/assistant': '/v1' },
+    pathRewrite: { '^/assistant': '' },
     on: {
-      proxyReq: (proxyReq) => {
-        // Strip any client-side auth header, inject the server's API_SERVER_KEY.
-        proxyReq.removeHeader('authorization');
-        proxyReq.setHeader('Authorization', `Bearer ${process.env.HERMES_API_KEY ?? ''}`);
-      },
       error: (err, _req, res) => {
-        logger.error('Hermes proxy error', { error: String(err) });
+        logger.error('Ollama proxy error', { error: String(err) });
         if (!('headersSent' in res && res.headersSent)) {
           (res as express.Response).status(502).json({ code: 'BAD_GATEWAY', message: 'AI service unavailable' });
         }
@@ -83,10 +82,9 @@ app.post('/recommendations/research', express.json(), async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.HERMES_API_KEY ?? ''}`,
       },
       body: JSON.stringify({
-        model: 'hermes-agent',
+        model: HERMES_MODEL,
         messages: [
           {
             role: 'system',
@@ -138,6 +136,60 @@ for (const [prefix, target] of Object.entries(SERVICES)) {
     })
   );
 }
+
+// ── Daily fire-season morning briefing ──────────────────────────────────────
+// Fires at 6 AM daily. Skips outside Australian fire season (Apr–Sep).
+// Prompts nous-hermes2 for a structured briefing, then POSTs to the feed service.
+cron.schedule('0 6 * * *', async () => {
+  const month = new Date().getMonth() + 1;
+  const inFireSeason = month >= 10 || month <= 3;
+  if (!inFireSeason) return;
+
+  logger.info('Running daily fire-risk briefing');
+  try {
+    const ollamaRes = await fetch(`${HERMES_BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: HERMES_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an Australian bushfire risk analyst. Return ONLY valid JSON — no markdown, no commentary.',
+          },
+          {
+            role: 'user',
+            content: `Today is ${new Date().toDateString()}. Produce a morning fire-risk briefing for NSW, VIC, SA, and WA based on seasonal conditions. State the overall severity, highest-risk regions, and one practical action for residents. Keep summary under 80 words. Respond with JSON only: {"severity":"LOW|MEDIUM|HIGH|EXTREME|CATASTROPHIC","summary":"..."}`,
+          },
+        ],
+        max_tokens: 300,
+      }),
+    });
+
+    if (!ollamaRes.ok) throw new Error(`Ollama responded with ${ollamaRes.status}`);
+
+    const data = await ollamaRes.json() as { choices: Array<{ message: { content: string } }> };
+    const raw = data.choices?.[0]?.message?.content ?? '{}';
+    const cleaned = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+    const { severity, summary } = JSON.parse(cleaned) as { severity: string; summary: string };
+
+    await fetch(`${FEED_URL_INTERNAL}/feeds`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'FIRE_BRIEFING',
+        severity,
+        content: summary,
+        source: 'haven-ai',
+        correlationId: crypto.randomUUID(),
+      }),
+    });
+
+    logger.info('Fire-risk briefing published', { severity });
+  } catch (err) {
+    logger.error('Fire briefing cron failed', { error: String(err) });
+  }
+});
 
 app.listen(PORT, () => logger.info(`api-gateway listening on port ${PORT}`));
 
