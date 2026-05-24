@@ -190,7 +190,7 @@ export async function enrichFromAtlas(): Promise<void> {
            (id, scenario, category, title, description, provider, eligibility_summary,
             application_url, confidence, is_verified, priority)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE,$10)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (scenario, title) DO NOTHING`,
         [
           randomUUID(),
           p.scenario,
@@ -214,4 +214,90 @@ export async function enrichFromAtlas(): Promise<void> {
     atlasServicesFound: services.length,
     programsInserted: inserted,
   });
+
+  // Third pass: GrantConnect — live federal open grants portal
+  await enrichFromGrantConnect();
+}
+
+// ── GrantConnect API ─────────────────────────────────────────────────────────
+
+interface GrantConnectGrant {
+  id?: string;
+  title?: string;
+  description?: string;
+  grantingBody?: string;
+  applicationUrl?: string;
+  category?: string;
+}
+
+const GRANTCONNECT_CATEGORY_MAP: Record<string, 'GRANT' | 'HEALTH' | 'HOUSING' | 'EMERGENCY' | 'RECOVERY'> = {
+  'natural disaster': 'GRANT',
+  'emergency': 'EMERGENCY',
+  'housing': 'HOUSING',
+  'health': 'HEALTH',
+};
+
+function mapGrantCategory(raw?: string): 'GRANT' | 'HEALTH' | 'HOUSING' | 'EMERGENCY' | 'RECOVERY' {
+  const lower = (raw ?? '').toLowerCase();
+  for (const [key, val] of Object.entries(GRANTCONNECT_CATEGORY_MAP)) {
+    if (lower.includes(key)) return val;
+  }
+  return 'GRANT';
+}
+
+async function enrichFromGrantConnect(): Promise<void> {
+  const key = process.env.GRANTCONNECT_API_KEY;
+  if (!key) {
+    logger.info('GRANTCONNECT_API_KEY not set — skipping GrantConnect enrichment');
+    return;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+
+  let grants: GrantConnectGrant[];
+  try {
+    const res = await fetch(
+      'https://www.grants.gov.au/api/v2/grants?keyword=bushfire+disaster&status=open&limit=50',
+      {
+        signal: controller.signal,
+        headers: { 'Authorization': `Bearer ${key}`, 'Accept': 'application/json' },
+      },
+    );
+    clearTimeout(timer);
+    if (!res.ok) { logger.warn('GrantConnect non-200', { status: res.status }); return; }
+    const json = await res.json() as { grants?: GrantConnectGrant[]; data?: GrantConnectGrant[] };
+    grants = json.grants ?? json.data ?? [];
+  } catch (err) {
+    clearTimeout(timer);
+    logger.warn('GrantConnect fetch failed (non-fatal)', { error: String(err) });
+    return;
+  }
+
+  let inserted = 0;
+  for (const g of grants) {
+    if (!g.title || !g.description) continue;
+    try {
+      await pool.query(
+        `INSERT INTO recommendations
+           (id, scenario, category, title, description, provider, eligibility_summary,
+            application_url, confidence, is_verified, priority)
+         VALUES ($1,'RECOVERY',$2,$3,$4,$5,'',$6,0.85,TRUE,50)
+         ON CONFLICT (scenario, title) DO NOTHING`,
+        [
+          randomUUID(),
+          mapGrantCategory(g.category),
+          g.title,
+          g.description,
+          g.grantingBody ?? 'Australian Government',
+          g.applicationUrl ?? null,
+        ],
+      );
+      inserted++;
+    } catch (err) {
+      logger.warn('GrantConnect insert failed', { title: g.title, error: String(err) });
+    }
+  }
+
+  logger.info('GrantConnect enrichment complete', { total: grants.length, inserted });
 }

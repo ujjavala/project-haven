@@ -148,19 +148,39 @@ The hackathon UI was functional but wrong for the use case. Emergency UX has spe
 
 Copilot rebuilt the entire frontend systematically:
 
-- **Design system** — a new `index.css` with semantic CSS variables (`--c-critical`, `--c-high`, `--c-medium`, `--c-safe`, spacing tokens, radius tokens, `--nav-h` for bottom nav clearance) and glassmorphism card styles
-- **Bottom nav** — replaced the top navbar with a mobile-first fixed bottom nav with active state, online/offline indicator dot, and quick-access icons for AI assistant and settings
-- **Emergency dashboard** — risk severity banner with animated pulse on CRITICAL, stat tiles, location-aware map with evacuation point markers, sticky CTA buttons
+- **Design system** — a new `index.css` with semantic CSS variables (`--c-critical`, `--c-high`, `--c-medium`, `--c-safe`, spacing tokens, radius tokens, `--nav-w` for sidebar width, `--header-h` for page header clearance) and glassmorphism card styles
+- **Left sidebar nav** — rebuilt navigation from a mobile bottom bar to a 220px fixed left sidebar with icon + label rows, an active state indicator bar, online/offline status dot, and AI assistant + Settings links pinned at the bottom; collapses to a 60px icon-only rail at `< 768px`
+- **Page headers with back navigation** — every screen except the dashboard has a sticky `52px` page header with a `ChevronLeft` back button that calls `navigate(-1)`, giving the app proper browser-history navigation without a router-level back stack
+- **Web app layout** — removed the `430px` phone-shell constraint and switched the root layout to `display: flex; flex-direction: row` so the sidebar and content fill the viewport side by side; no `max-width` on the main content area
+- **Emergency dashboard** — risk severity banner with animated pulse on CRITICAL, two-column grid layout (map + stat tiles on the left, live alerts + nearest safe spaces on the right at `380px`), sticky CTA buttons
 - **Alert overlay** — full-screen takeover for CRITICAL priority alerts with haptic-style dismiss, priority-tiered behaviour (CRITICAL → full screen, HIGH → persistent, MEDIUM → toast, LOW → feed)
 - **Three new screens** — Onboarding (4-step permissions flow), Settings (toggles, emergency contacts, accessibility), AI Assistant (chat interface)
 
 All components used the design token system consistently — no hardcoded hex values, no magic numbers.
 
-### Atlas data enrichment
+### Atlas data enrichment and real open data
 
-The static seed data in the recommendation and safe-space services was real but limited. I wanted live Australian government data at startup — Geoscience Australia's Topographic Facilities FeatureServer for evacuation points, fire-prone area centroids for prediction seeds, and additional Services Australia recovery programs for recommendations.
+The static seed data was a starting point, not a destination. I wanted the platform to pull from the best available Australian open data sources at startup — live fire detections, real evacuation assembly points, current government grants.
 
-Copilot wrote three `atlasEnrich.ts` files — one per service — each following the same pattern: paginated ArcGIS REST fetch with a 12-second `AbortController` timeout, coordinate bounds validation for Australia (`lat: -44 to -10, lng: 112 to 154`), `ON CONFLICT DO NOTHING` inserts, and a static fallback if the endpoint is unreachable. All wired as fire-and-forget calls in each service's `start()` function — never blocking startup, never throwing.
+Copilot initially wrote three `atlasEnrich.ts` files using Geoscience Australia's Digital Atlas ArcGIS REST endpoints — a good foundation. But GA polygon data only goes so far, especially for fire detection where you want sub-3-hour satellite observations. So we went further.
+
+The final enrichment pipeline by service:
+
+**safe-space-service** — GA Atlas (topographic facilities) → **OpenStreetMap Overpass API** (no key required). The Overpass query targets `emergency=assembly_point`, `emergency=evacuation_point`, and `amenity=evacuation_centre` nodes within the Australia bounding box. OSM has surprisingly comprehensive coverage of designated emergency assembly points that don't appear in government datasets. Accessibility tags (`wheelchair`, `toilets_wheelchair`, `parking_disabled`, `pets`) are read directly from OSM node tags.
+
+**prediction-service** — A four-source priority cascade: **NASA FIRMS VIIRS NRT satellite detections** (3-hour near-real-time, requires a free MAP_KEY) → **VIC Emergency public JSON feed** (no key) → **NSW RFS major incidents JSON feed** (no key) → GA vegetation polygon centroids → static fallback. The FIRMS response includes fire radiative power (`frp`) in MW and string confidence values (`'l'`, `'n'`, `'h'`) which map to numeric probabilities for the risk engine. If FIRMS data exists, the live state feeds supplement it. If nothing is reachable, the static seed ensures the service always starts with plausible data.
+
+**recommendation-service** — Curated seed of known recovery programs → GA Atlas community facilities → **GrantConnect API** (`/v2/grants?keyword=bushfire+disaster&status=open`, requires free API key). GrantConnect is the Australian Government's official grants database. The integration maps grant categories to the service's scenario taxonomy (`GRANT`, `RECOVERY`, `HOUSING`, `HEALTH`, `EMERGENCY`) and deduplicates on `(scenario, title)`.
+
+All three are fire-and-forget calls in each service's `start()` — never blocking, never throwing, always falling back gracefully. Both API keys (`NASA_FIRMS_MAP_KEY`, `GRANTCONNECT_API_KEY`) are optional environment variables documented in `.env.example`.
+
+### Debugging the ON CONFLICT DO NOTHING silent failure
+
+After wiring up the enrichment layer, the recommendation and safe-space services kept inserting duplicate rows on every restart. The `ON CONFLICT DO NOTHING` clause was there — visually it looked correct. But it silently did nothing.
+
+The root cause: every INSERT was using `gen_random_uuid()` as the primary key. UUID PKs are always unique by definition, so `ON CONFLICT` on the PK could never trigger. There was no other unique constraint, so duplicates streamed in on every startup.
+
+The fix was two-part: add `UNIQUE` constraints on natural keys (`name` for safe spaces, `(scenario, title)` for recommendations) idempotently in the service's `init()` via a `DO $$ BEGIN ... EXCEPTION WHEN duplicate_table THEN NULL; END $$` block, then update every INSERT — both seed and enrichment — to specify the column: `ON CONFLICT (name) DO NOTHING`. Copilot caught that the same pattern existed in all three `atlasEnrich.ts` files and fixed them in one pass.
 
 ### Debugging the amqplib type breaking change
 
@@ -188,9 +208,9 @@ Project Haven started as a 46-hour sprint, won a competition, and then sat untou
 
 The answer turned out to be: a lot better.
 
-The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI actually reflects the emergency UX principles we always intended. Live Australian government data flows in from Geoscience Australia's open APIs at startup. The whole thing runs with a single `docker compose up --build`.
+The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI is a full-width web application — not a phone simulator in a browser — with proper sidebar navigation, back-button routing, and a two-column dashboard that uses screen real estate the way a desktop tool should. Live fire detections from NASA satellites, real Australian evacuation assembly points from OpenStreetMap, and current government grants from GrantConnect flow in at startup. The whole thing runs with a single `docker compose up --build`.
 
-None of that would have happened at this pace working solo without Copilot. Not because any individual piece was impossible — but because the sheer volume of consistent, conforming implementation across six services, a shared module, a full UI rebuild, and a data enrichment layer would have taken weeks of context-switching. With Copilot holding the system context and working within the established patterns, it compressed into days.
+None of that would have happened at this pace working solo without Copilot. Not because any individual piece was impossible — but because the sheer volume of consistent, conforming implementation across six services, a shared module, a full UI rebuild, a data enrichment layer across four distinct external APIs, and edge cases like the `ON CONFLICT` silent failure would have taken weeks of context-switching. With Copilot holding the system context and working within the established patterns, it compressed into days.
 
 I'm not saying it's done. There's still proper auth flows, load testing, mobile push notifications, and a dozen other things on the list.
 

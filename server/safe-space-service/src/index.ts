@@ -44,19 +44,38 @@ async function initDb(): Promise<void> {
     )
   `);
 
-  // Seed real Australian evacuation centres from known locations
+  // Remove duplicates (keep oldest row per name) before adding constraint
   await pool.query(`
-    INSERT INTO safe_spaces (id, name, address, latitude, longitude, accessibility, capacity_current, capacity_max, is_open)
+    DELETE FROM safe_spaces s
+    WHERE s.id NOT IN (
+      SELECT DISTINCT ON (name) id
+      FROM safe_spaces
+      ORDER BY name, id
+    )
+  `);
+
+  // Add unique constraint on name idempotently
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE safe_spaces ADD CONSTRAINT safe_spaces_name_key UNIQUE (name);
+    EXCEPTION WHEN duplicate_table THEN NULL;
+             WHEN duplicate_object THEN NULL;
+    END $$
+  `);
+
+  // Seed real Australian evacuation centres
+  await pool.query(`
+    INSERT INTO safe_spaces (name, address, latitude, longitude, accessibility, capacity_current, capacity_max, is_open)
     VALUES
-      (gen_random_uuid(), 'Sydney Olympic Park Aquatic Centre', 'Olympic Blvd, Sydney Olympic Park NSW 2127', -33.8445, 151.0686, ARRAY['wheelchair','accessible_toilet','parking'], 120, 2000, TRUE),
-      (gen_random_uuid(), 'Melbourne Showgrounds', 'Epsom Rd, Ascot Vale VIC 3032', -37.7879, 144.9375, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 200, 5000, TRUE),
-      (gen_random_uuid(), 'Canberra Racecourse', 'Randwick Rd, Lyneham ACT 2602', -35.2494, 149.1213, ARRAY['wheelchair','parking','pet_friendly'], 50, 1500, TRUE),
-      (gen_random_uuid(), 'Brisbane Showgrounds', 'Gregory Terrace, Bowen Hills QLD 4006', -27.4482, 153.0393, ARRAY['wheelchair','accessible_toilet','parking'], 300, 3000, TRUE),
-      (gen_random_uuid(), 'Adelaide Showground', 'Leader St, Wayville SA 5034', -34.9367, 138.5798, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 80, 2500, TRUE),
-      (gen_random_uuid(), 'Perth Showground', 'Claremont Cres, Claremont WA 6010', -31.9825, 115.7837, ARRAY['wheelchair','accessible_toilet','parking'], 60, 2000, TRUE),
-      (gen_random_uuid(), 'Hobart Showground', 'Howard Rd, Glenorchy TAS 7010', -42.8321, 147.2627, ARRAY['wheelchair','parking'], 40, 800, TRUE),
-      (gen_random_uuid(), 'Darwin Showground', 'Gaffaney St, Winnellie NT 0820', -12.4259, 130.8810, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 30, 600, TRUE)
-    ON CONFLICT DO NOTHING
+      ('Sydney Olympic Park Aquatic Centre', 'Olympic Blvd, Sydney Olympic Park NSW 2127', -33.8445, 151.0686, ARRAY['wheelchair','accessible_toilet','parking'], 120, 2000, TRUE),
+      ('Melbourne Showgrounds', 'Epsom Rd, Ascot Vale VIC 3032', -37.7879, 144.9375, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 200, 5000, TRUE),
+      ('Canberra Racecourse', 'Randwick Rd, Lyneham ACT 2602', -35.2494, 149.1213, ARRAY['wheelchair','parking','pet_friendly'], 50, 1500, TRUE),
+      ('Brisbane Showgrounds', 'Gregory Terrace, Bowen Hills QLD 4006', -27.4482, 153.0393, ARRAY['wheelchair','accessible_toilet','parking'], 300, 3000, TRUE),
+      ('Adelaide Showground', 'Leader St, Wayville SA 5034', -34.9367, 138.5798, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 80, 2500, TRUE),
+      ('Perth Showground', 'Claremont Cres, Claremont WA 6010', -31.9825, 115.7837, ARRAY['wheelchair','accessible_toilet','parking'], 60, 2000, TRUE),
+      ('Hobart Showground', 'Howard Rd, Glenorchy TAS 7010', -42.8321, 147.2627, ARRAY['wheelchair','parking'], 40, 800, TRUE),
+      ('Darwin Showground', 'Gaffaney St, Winnellie NT 0820', -12.4259, 130.8810, ARRAY['wheelchair','accessible_toilet','parking','pet_friendly'], 30, 600, TRUE)
+    ON CONFLICT (name) DO NOTHING
   `);
 
   logger.info('Database schema ready with seed data');

@@ -135,7 +135,7 @@ export async function enrichFromAtlas(): Promise<void> {
           `INSERT INTO safe_spaces
              (name, address, latitude, longitude, accessibility, capacity_current, capacity_max, is_open)
            VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
-           ON CONFLICT DO NOTHING`,
+           ON CONFLICT (name) DO NOTHING`,
           [name, address, lat, lng, tags, 0, capacity],
         );
         inserted += result.rowCount ?? 0;
@@ -149,4 +149,85 @@ export async function enrichFromAtlas(): Promise<void> {
   }
 
   logger.info('Digital Atlas enrichment complete', { inserted });
+
+  // Second pass: OSM Overpass API — emergency assembly/evacuation points across Australia
+  await enrichFromOsm();
+}
+
+/** OSM Overpass: nodes tagged as emergency assembly or evacuation points in Australia */
+async function enrichFromOsm(): Promise<void> {
+  const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+  const query = `[out:json][timeout:30];
+(
+  node["emergency"="assembly_point"](-44,112,-10,154);
+  node["emergency"="evacuation_point"](-44,112,-10,154);
+  node["amenity"="evacuation_centre"](-44,112,-10,154);
+);
+out body;`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35_000);
+
+  let elements: OsmElement[];
+  try {
+    const res = await fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) { logger.warn('OSM Overpass non-200', { status: res.status }); return; }
+    const json = await res.json() as { elements?: OsmElement[] };
+    elements = json.elements ?? [];
+  } catch (err) {
+    clearTimeout(timer);
+    logger.warn('OSM Overpass fetch failed (non-fatal)', { error: String(err) });
+    return;
+  }
+
+  let inserted = 0;
+  for (const el of elements) {
+    const lat = el.lat;
+    const lng = el.lon;
+    if (!lat || !lng) continue;
+    if (lat < -44 || lat > -10 || lng < 112 || lng > 154) continue;
+
+    const name = el.tags?.name ?? el.tags?.['addr:housename'] ?? `Emergency Point ${el.id}`;
+    const addrParts = [
+      el.tags?.['addr:housenumber'],
+      el.tags?.['addr:street'],
+      el.tags?.['addr:suburb'] ?? el.tags?.['addr:city'],
+      el.tags?.['addr:state'],
+    ].filter(Boolean);
+    const address = addrParts.length > 0 ? addrParts.join(' ') : el.tags?.['addr:full'] ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+    const tags: string[] = [];
+    if (el.tags?.wheelchair === 'yes' || el.tags?.wheelchair === 'designated') tags.push('wheelchair');
+    if (el.tags?.toilets_wheelchair === 'yes') tags.push('accessible_toilet');
+    if (el.tags?.parking) tags.push('parking');
+    if (el.tags?.dogs === 'yes' || el.tags?.pets === 'yes') tags.push('pet_friendly');
+
+    try {
+      const result = await pool.query(
+        `INSERT INTO safe_spaces
+           (name, address, latitude, longitude, accessibility, capacity_current, capacity_max, is_open)
+         VALUES ($1, $2, $3, $4, $5, 0, 500, TRUE)
+         ON CONFLICT (name) DO NOTHING`,
+        [name, address, lat, lng, tags],
+      );
+      inserted += result.rowCount ?? 0;
+    } catch (dbErr) {
+      logger.warn('OSM insert failed', { name, error: String(dbErr) });
+    }
+  }
+
+  logger.info('OSM Overpass enrichment complete', { total: elements.length, inserted });
+}
+
+interface OsmElement {
+  id: number;
+  lat?: number;
+  lon?: number;
+  tags?: Record<string, string>;
 }
