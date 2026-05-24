@@ -1,0 +1,331 @@
+version: '3.9'
+
+# ─── Networks ────────────────────────────────────────────────────────────────
+networks:
+  haven-net:
+    driver: bridge
+
+# ─── Volumes ─────────────────────────────────────────────────────────────────
+volumes:
+  pg-users:
+  pg-feeds:
+  pg-predictions:
+  pg-spaces:
+  pg-recommendations:
+  pg-alerts:
+  rabbitmq-data:
+
+# ─── Common service defaults ─────────────────────────────────────────────────
+x-service-defaults: &service-defaults
+  networks: [haven-net]
+  restart: unless-stopped
+  environment: &common-env
+    NODE_ENV: development
+    JWT_SECRET: haven-local-dev-secret
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    <<: *service-defaults
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI: http://localhost:15672  (guest/guest)
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-users:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_users
+    volumes:
+      - pg-users:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_users"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-feeds:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_feeds
+    volumes:
+      - pg-feeds:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_feeds"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-predictions:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_predictions
+    volumes:
+      - pg-predictions:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_predictions"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-spaces:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_spaces
+    volumes:
+      - pg-spaces:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_spaces"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-recommendations:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_recommendations
+    volumes:
+      - pg-recommendations:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_recommendations"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-alerts:
+    image: postgres:16-alpine
+    <<: *service-defaults
+    environment:
+      POSTGRES_USER: haven
+      POSTGRES_PASSWORD: haven
+      POSTGRES_DB: haven_alerts
+    volumes:
+      - pg-alerts:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U haven -d haven_alerts"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Services ────────────────────────────────────────────────────────────────
+
+  user-service:
+    build:
+      context: .
+      dockerfile: server/user-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3001:3001"
+    environment:
+      <<: *common-env
+      PORT: 3001
+      DB_HOST: postgres-users
+      DB_PORT: 5432
+      DB_NAME: haven_users
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  feed-service:
+    build:
+      context: .
+      dockerfile: server/feed-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3002:3002"
+    environment:
+      <<: *common-env
+      PORT: 3002
+      DB_HOST: postgres-feeds
+      DB_PORT: 5432
+      DB_NAME: haven_feeds
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-feeds:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prediction-service:
+    build:
+      context: .
+      dockerfile: server/prediction-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3003:3003"
+    environment:
+      <<: *common-env
+      PORT: 3003
+      DB_HOST: postgres-predictions
+      DB_PORT: 5432
+      DB_NAME: haven_predictions
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-predictions:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  safe-space-service:
+    build:
+      context: .
+      dockerfile: server/safe-space-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3004:3004"
+    environment:
+      <<: *common-env
+      PORT: 3004
+      DB_HOST: postgres-spaces
+      DB_PORT: 5432
+      DB_NAME: haven_spaces
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-spaces:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3004/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  recommendation-service:
+    build:
+      context: .
+      dockerfile: server/recommendation-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3005:3005"
+    environment:
+      <<: *common-env
+      PORT: 3005
+      DB_HOST: postgres-recommendations
+      DB_PORT: 5432
+      DB_NAME: haven_recommendations
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-recommendations:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  alert-service:
+    build:
+      context: .
+      dockerfile: server/alert-service/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3006:3006"
+    environment:
+      <<: *common-env
+      PORT: 3006
+      DB_HOST: postgres-alerts
+      DB_PORT: 5432
+      DB_NAME: haven_alerts
+      DB_USER: haven
+      DB_PASSWORD: haven
+    depends_on:
+      postgres-alerts:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3006/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: server/api-gateway/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *common-env
+      PORT: 8080
+      USER_SERVICE_URL:           http://user-service:3001
+      FEED_SERVICE_URL:           http://feed-service:3002
+      PREDICTION_SERVICE_URL:     http://prediction-service:3003
+      SAFE_SPACE_SERVICE_URL:     http://safe-space-service:3004
+      RECOMMENDATION_SERVICE_URL: http://recommendation-service:3005
+      ALERT_SERVICE_URL:          http://alert-service:3006
+    depends_on:
+      user-service:
+        condition: service_healthy
+      feed-service:
+        condition: service_healthy
+      prediction-service:
+        condition: service_healthy
+      safe-space-service:
+        condition: service_healthy
+      recommendation-service:
+        condition: service_healthy
+      alert-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  client:
+    build:
+      context: .
+      dockerfile: client/pwa/Dockerfile
+    <<: *service-defaults
+    ports:
+      - "3000:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
