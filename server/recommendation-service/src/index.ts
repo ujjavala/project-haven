@@ -36,6 +36,7 @@ app.get('/recommendations', async (req, res) => {
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'recommendation-service' }));
 
 async function initDb(): Promise<void> {
+  // Create table (without unique constraint first, to handle existing DBs)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS recommendations (
       id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -50,6 +51,25 @@ async function initDb(): Promise<void> {
       is_verified         BOOLEAN NOT NULL DEFAULT TRUE,
       priority            INT NOT NULL DEFAULT 50
     )
+  `);
+
+  // Remove duplicates (keep lowest id per scenario+title) before adding constraint
+  await pool.query(`
+    DELETE FROM recommendations r
+    WHERE r.id NOT IN (
+      SELECT DISTINCT ON (scenario, title) id
+      FROM recommendations
+      ORDER BY scenario, title, id
+    )
+  `);
+
+  // Add unique constraint idempotently
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE recommendations ADD CONSTRAINT recommendations_scenario_title_key UNIQUE (scenario, title);
+    EXCEPTION WHEN duplicate_table THEN NULL;
+             WHEN duplicate_object THEN NULL;
+    END $$
   `);
 
   // Seed real Australian government services and grants
@@ -101,7 +121,7 @@ async function initDb(): Promise<void> {
         'State & Federal Government',
         'Primary producers (farmers, fishers) in declared disaster areas with demonstrated financial need.',
         NULL, 0.85, 5)
-    ON CONFLICT DO NOTHING
+    ON CONFLICT (scenario, title) DO NOTHING
   `);
 
   logger.info('Database schema ready with seed data');
