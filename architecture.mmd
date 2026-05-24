@@ -31,9 +31,15 @@ flowchart TB
         AS["Alert Service\n:3006\nPostgres"]
     end
 
+    subgraph ml["ML Sidecar · Docker"]
+        MS["Model Service :8000\nPython · FastAPI\nXGBoost — trained on\nGA Bushfire Boundaries\n(baked in at build time)"]
+        NB["notebooks/\nhistoric_bushfire.ipynb\n(EDA + training source)"]
+        NB -. "train.py bakes model\ninto Docker image" .-> MS
+    end
+
     subgraph data["External Data"]
         GA["Geoscience Australia\nArcGIS REST API\n(evacuation points,\nfire-prone areas)"]
-        BOM["BOM / RFS\nWeather & Fire Feeds"]
+        BOM["BOM / RFS / NASA FIRMS\nWeather & Fire Feeds"]
     end
 
     client -->|"REST /api/*\n(online)"| gateway
@@ -46,6 +52,7 @@ flowchart TB
 
     PS -->|"weather.updated →"| MQ
     MQ -->|"→ bushfire.predicted"| PS
+    PS -->|"XGBoost scale factor\n(async, 2 s timeout)"| MS
     PS -->|"bushfire.predicted →"| MQ
     MQ -->|"→ alert.generated"| AS
     AS -->|"→ push / in-app"| MQ

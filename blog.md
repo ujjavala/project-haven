@@ -12,7 +12,7 @@ The core idea is simple but important: **during a bushfire, information is survi
 
 Under the hood, the platform combines:
 
-- **Predictive analytics** — a bushfire risk engine built on historical boundary data and real-time weather streams
+- **Predictive analytics** — a bushfire risk engine combining the McArthur FFDI Mark 5 formula (official BOM standard) with an XGBoost model trained on GA historical fire data, running as a Python sidecar blended at 80/20
 - **Smart evacuation routing** — nearest safe space recommendations with distance and ETA
 - **AI-powered recovery support** — scenario-based government grants and services backed by live AI research via Nous Hermes 2 (real ones, like the Disaster Recovery Payment and Primary Producer Recovery Grant)
 - **Live emergency guidance** — an AI Assistant powered by Nous Hermes 2 running locally via Ollama; real conversational responses grounded in Australian emergency protocols, with a system prompt that escalates to 000 when needed
@@ -20,7 +20,7 @@ Under the hood, the platform combines:
 - **Real-time alerts** — tiered notifications from low-priority feed updates to full-screen critical banners
 - **Offline-first PWA** — because during emergencies, mobile networks are the first thing to go
 
-The architecture is fully event-driven microservices: a prediction service subscribes to weather updates, runs a heuristic engine (trained on XGBoost weights from our data notebooks), publishes bushfire predictions, and the alert service automatically generates tiered notifications from those predictions. All async. All decoupled. RabbitMQ handling the message bus, PostgreSQL for persistence, React PWA for the frontend, everything containerised and wired together with Docker Compose — including a local Ollama instance serving Nous Hermes 2 for the AI Assistant, grant research, and scheduled fire-season briefings.
+The architecture is fully event-driven microservices: a prediction service subscribes to weather updates, runs the FFDI engine blended with an XGBoost model-service sidecar (Python/FastAPI, trained from GA bushfire boundaries and baked into Docker at build time), publishes bushfire predictions, and the alert service automatically generates tiered notifications from those predictions. All async. All decoupled. RabbitMQ handling the message bus, PostgreSQL for persistence, React PWA for the frontend, everything containerised and wired together with Docker Compose — including a local Ollama instance serving Nous Hermes 2 for the AI Assistant, grant research, and scheduled fire-season briefings.
 
 The part I'm still most proud of? The offline-first thinking. The app caches evacuation points, alerts, and recommendations locally. If connectivity drops mid-crisis — which it will — the app keeps working.
 
@@ -61,7 +61,9 @@ Project Haven was built for [**GovHack 2024**](https://govhack.org/)
 
 If you've never done GovHack — it's a 46-hour hackathon using Australian government open data. You show up, pick a problem, build something, demo it, and hope the judges like it.
 
-We showed up with the idea of building something that could actually help people during bushfire emergencies. Real datasets. Real evacuation centres. A real prediction model. We used the Digital Atlas historical bushfire boundaries CSV and ABS community datasets, built XGBoost models in Jupyter notebooks, sketched out an event-driven microservice architecture on a whiteboard, and somehow shipped a working demo in 46 hours.
+We showed up with the idea of building something that could actually help people during bushfire emergencies. Real datasets. Real data analysis. A real prediction model. We used the Digital Atlas historical bushfire boundaries CSV and ABS community datasets, built XGBoost models in Jupyter notebooks, and sketched out an event-driven microservice architecture on a whiteboard.
+
+No UI. No running backend. Just the notebooks, the numbers, and a vision for what the system *could* be.
 
 **And we won.**
 
@@ -90,11 +92,10 @@ This time, instead of treating it like a hackathon submission, I started treatin
 That meant a completely different mindset:
 
 **Before (hackathon mode):**
-- Optimise for speed
-- Ship a working demo by Sunday
-- Mock data everywhere
-- Architecture is aspirational, not real
-- "We'll clean this up later"
+- A system design architecture diagram
+- Jupyter notebooks with some number crunching
+- No UI. No backend. Just the idea and the data analysis.
+- "We'll build the rest... later"
 
 **After (product mode):**
 - Contract-first OpenAPI specs before any implementation
@@ -109,7 +110,13 @@ That meant a completely different mindset:
 
 One of the biggest architectural calls was how to handle the shared module. Every service needed the same event shapes, DTOs, and logger. Instead of duplicating types everywhere (the hackathon approach), I built `@haven/shared` as a proper local npm package that each service depends on. The Dockerfiles build it first, then link it. Small thing, but it's the kind of thing that makes a codebase actually maintainable.
 
-Another big one was the prediction engine. Our XGBoost notebooks had real trained weights. Rather than running a Python sidecar in Docker (which would've complicated the whole deployment story), I transcribed the coefficients into a TypeScript heuristic engine. Same logic, same weights, same outputs — but native to the Node service stack and self-contained in Docker. Clean.
+Another big one was the prediction engine. Our XGBoost notebooks had a trained model for fire risk prediction. And here I'll be fully honest: I'm not a data scientist. During the hackathon I didn't really know what I was doing with the notebooks. I just sort of... cooked up weights that felt plausible. Temperature matters a lot? Sure, give it 0.35. Wind is bad? 0.25. Humidity inverse, obviously. Slap some season bonuses on. Done. Ship it.
+
+Copilot called this out completely. Not in a confrontational way — but when I started asking about the prediction engine during the rebuild, it surfaced the actual problems: the `test_size=0.8` split that meant the model was *training on 20%* of the data and validating on 80% (backwards), the `area_ha < 3` outlier filter that was literally removing all the dangerous large fires from the training set, and — most damningly — the fact that the XGBoost model was predicting *fire size* from historical boundary features while the TypeScript engine was computing a *risk score* from weather inputs. They were solving completely different problems. The weights I'd put in had no relationship to anything the notebook had analysed. They were just numbers I made up at 2am that sounded reasonable.
+
+So instead of just transcribing invented numbers, we rebuilt it properly. The engine now implements the McArthur Forest Fire Danger Index (FFDI) Mark 5 — the actual formula used by the Bureau of Meteorology and every Australian state fire service. The notebook was fixed (correct 80/20 train/test split, log-IQR outlier handling to keep the large fires), and the XGBoost model now serves a real purpose: predicting expected fire size (in hectares) for a given state and month, used as a historical context signal blended at 20% weight into the FFDI weather score. The XGBoost model now runs as a proper Python `model-service` FastAPI sidecar, trained at Docker build time from the GA Historical Bushfire Boundaries dataset and baked into the image so startup is instant. The prediction service calls it asynchronously with a 2-second timeout; if it's unreachable, FFDI-only scoring kicks in — no hard dependency on the critical path.
+
+The "I just made numbers up" moment is a good illustration of why having something that can actually interrogate your assumptions matters, especially when you're working outside your domain.
 
 The whole thing went from "hackathon skeleton with mock data" to a working end-to-end system you can actually spin up and test. Weather event goes in, prediction comes out, alert fires, PWA displays it — all observable, all local, all real.
 
@@ -209,7 +216,7 @@ Project Haven started as a 46-hour sprint, won a competition, and then sat untou
 
 The answer turned out to be: a lot better.
 
-The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI is a full-width web application — not a phone simulator in a browser — with proper sidebar navigation, back-button routing, and a two-column dashboard that uses screen real estate the way a desktop tool should. Live fire detections from NASA satellites, real Australian evacuation assembly points from OpenStreetMap, and current government grants from GrantConnect flow in at startup. The AI Assistant — previously a `setTimeout` and a `switch` statement of canned responses — is now backed by Nous Hermes 2 running locally via Ollama, with a system prompt grounded in verified Australian emergency protocols. The whole thing runs with a single `docker compose up --build`.
+The prediction pipeline works end-to-end. The offline-first architecture actually functions. The microservices actually talk to each other through real events. The UI is a full-width web application — not a phone simulator in a browser — with proper sidebar navigation, back-button routing, and a two-column dashboard that uses screen real estate the way a desktop tool should. Live fire detections from NASA satellites, real Australian evacuation assembly points from OpenStreetMap, and current government grants from GrantConnect flow in at startup. The AI Assistant — previously a `setTimeout` and a `switch` statement of canned responses — is now backed by Nous Hermes 2 running locally via Ollama, with a system prompt grounded in verified Australian emergency protocols. The prediction engine now implements the McArthur FFDI Mark 5 formula (the actual BOM standard) blended with an XGBoost model trained from real GA historical fire data — running as a Python FastAPI sidecar built into Docker — replacing the made-up weights from the hackathon. The whole thing runs with a single `docker compose up --build`.
 
 None of that would have happened at this pace working solo without Copilot. Not because any individual piece was impossible — but because the sheer volume of consistent, conforming implementation across six services, a shared module, a full UI rebuild, a data enrichment layer across four distinct external APIs, and edge cases like the `ON CONFLICT` silent failure would have taken weeks of context-switching. With Copilot holding the system context and working within the established patterns, it compressed into days.
 
@@ -223,5 +230,5 @@ And that's probably the best thing this challenge could have done.
 
 ---
 
-*Built with TypeScript, React, Node.js, PostgreSQL, RabbitMQ, Docker, Ollama (Nous Hermes 2), and GitHub Copilot.*  
+*Built with TypeScript, React, Node.js, Python (FastAPI + XGBoost), PostgreSQL, RabbitMQ, Docker, Ollama (Nous Hermes 2), and GitHub Copilot.*  
 *Originally born at GovHack 2024. Finally given room to grow.*

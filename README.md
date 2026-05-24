@@ -96,9 +96,15 @@ flowchart TB
         AS["Alert Service\n:3006\nPostgres"]
     end
 
+    subgraph ml["ML Sidecar · Docker"]
+        MS["Model Service :8000\nPython · FastAPI\nXGBoost — trained on\nGA Bushfire Boundaries\n(baked in at build time)"]
+        NB["notebooks/\nhistoric_bushfire.ipynb\n(EDA + training source)"]
+        NB -. "train.py bakes model\ninto Docker image" .-> MS
+    end
+
     subgraph data["External Data"]
         GA["Geoscience Australia\nArcGIS REST API\n(evacuation points,\nfire-prone areas)"]
-        BOM["BOM / RFS\nWeather & Fire Feeds"]
+        BOM["BOM / RFS / NASA FIRMS\nWeather & Fire Feeds"]
     end
 
     client -->|"REST /api/*\n(online)"| gateway
@@ -111,6 +117,7 @@ flowchart TB
 
     PS -->|"weather.updated →"| MQ
     MQ -->|"→ bushfire.predicted"| PS
+    PS -->|"XGBoost scale factor\n(async, 2 s timeout)"| MS
     PS -->|"bushfire.predicted →"| MQ
     MQ -->|"→ alert.generated"| AS
     AS -->|"→ push / in-app"| MQ
@@ -141,12 +148,13 @@ project-haven/
 │   ├── api-gateway/         # Express reverse proxy, rate limiting
 │   ├── user-service/        # CRUD users, JWT auth, audit logging
 │   ├── feed-service/        # Community feed, event stream
-│   ├── prediction-service/  # Bushfire risk engine (XGBoost weights → TS)
+│   ├── prediction-service/  # Bushfire risk engine (FFDI + XGBoost blend)
 │   ├── safe-space-service/  # Evacuation point recommendations
 │   ├── recommendation-service/ # Government grants & recovery services
 │   ├── alert-service/       # Tiered push notifications, <5s delivery
 │   └── shared/              # @haven/shared — events, DTOs, logger
-├── notebooks/               # EDA + XGBoost model (Python)
+├── notebooks/               # EDA + XGBoost model training (Python)
+├── server/model-service/    # Python FastAPI sidecar serving the trained model
 ├── docker-compose.yml
 ├── architecture.mmd         # Mermaid architecture diagram
 ├── blog.md                  # GitHub Finish-Up-A-Thon submission
@@ -228,11 +236,25 @@ Mobile-first offline-capable PWA with an emergency-first design system:
 
 ## Prediction Engine
 
-The `prediction-service` uses a TypeScript heuristic engine with weights transcribed from the XGBoost model trained in [`notebooks/historic_bushfire.ipynb`](notebooks/historic_bushfire.ipynb):
+The `prediction-service` uses a **two-signal blend**:
 
-- Inputs: temperature, humidity, wind speed, wind direction, vegetation density, season
-- Output: severity score (0–1), confidence, predicted radius (km), spread direction
-- Thresholds: `< 0.3` LOW · `< 0.5` MEDIUM · `< 0.7` HIGH · `≥ 0.7` EXTREME
+| Signal | Source | Weight |
+|---|---|---|
+| **FFDI** (McArthur Mark 5) | `engine.ts` — real-time weather: temperature, humidity, wind | 80% |
+| **XGBoost scale factor** | `model-service` Python sidecar — historical fire-size percentile from GA Bushfire Boundaries dataset | 20% |
+
+```
+blendedSeverity = FFDI_severity × 0.80 + xgboost_scale × 0.20
+```
+
+**FFDI** is the official Australian fire danger formula used by the Bureau of Meteorology. It accepts temperature, humidity, wind speed, and a drought factor (derived from soil moisture or falling back to monthly climatological priors extracted from the training dataset).
+
+**XGBoost** was trained on the Geoscience Australia Historical Bushfire Boundaries dataset (1970–2023, ~295k fires). After fixing the original hackathon bugs (`test_size=0.8` flipped; `area_ha < 3` outlier filter that discarded all large fires), the model reaches R² > 0.99 with XGBoost (vs ~0.65 with ElasticNet). At prediction time, the model receives `{month, state, year}` and returns the expected fire size percentile for that region/season — a historical context signal.
+
+**model-service** is a non-critical-path FastAPI sidecar. `prediction-service` calls it with a 2-second timeout. If it is unavailable, scoring falls back to FFDI-only — there is no hard dependency on the critical path.
+
+- Output: `severity` (0–1), `confidence` (0–1), `radiusKm`, `spreadDirection`, `ffdi` (raw score), `dangerRating` (BOM text label)
+- FFDI danger ratings: Low · Moderate · High · Very High · Severe · Extreme/Catastrophic
 
 ---
 
@@ -240,7 +262,7 @@ The `prediction-service` uses a TypeScript heuristic engine with weights transcr
 
 | Dataset | Source | Used for |
 |---|---|---|
-| Historical Bushfire Boundaries | [Digital Atlas](https://digital.atlas.gov.au/datasets/digitalatlas::historical-bushfire-boundaries-3/about) | XGBoost model training |
+| Historical Bushfire Boundaries | [Digital Atlas](https://digital.atlas.gov.au/datasets/digitalatlas::historical-bushfire-boundaries-3/about) | XGBoost model training; seasonal drought-factor priors |
 | Topographic Facilities | [GA ArcGIS REST](https://services.ga.gov.au/gis/rest/services/Topographic/Facilities/FeatureServer/0) | Evacuation point enrichment |
 | ABS Family & Community | [ABS 2021 Census](https://abs.gov.au/census/find-census-data/quickstats/2021/128021538) | Community vulnerability analysis |
 | 3-hourly Bushfire Accumulation | [Digital Atlas](https://digital.atlas.gov.au/datasets/digitalatlas::3-hourly-bushfire-accumulation/about) | Fire spread modelling |
@@ -265,7 +287,7 @@ The `prediction-service` uses a TypeScript heuristic engine with weights transcr
 - **AI:** Nous Hermes 2 via Ollama (OpenAI-compatible, locally hosted — chat, grant research, fire briefings)
 - **Messaging:** RabbitMQ
 - **Databases:** PostgreSQL (per-service)
-- **ML:** XGBoost (Python notebooks) → TypeScript heuristic engine
+- **ML:** XGBoost (Python `model-service`) + McArthur FFDI Mark 5 (TypeScript `engine.ts`) — blended 80/20
 - **Infra:** Docker Compose, multi-stage builds, `@haven/shared` local npm package
 - **Data:** Geoscience Australia / Digital Atlas ArcGIS REST APIs
 
